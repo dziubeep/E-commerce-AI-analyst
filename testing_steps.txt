@@ -1,0 +1,14 @@
+To manually run the Streamlit app, open a terminal in the project directory and run:
+
+cd "c:\Users\dziug\AI analyst"
+.\.venv\Scripts\python.exe -m streamlit run app.py
+
+Or if you've activated the virtual environment first:
+
+cd "c:\Users\dziug\AI analyst"
+.\.venv\Scripts\activate
+streamlit run app.py
+
+Streamlit will start and automatically open your browser to http://localhost:8501. If it doesn't auto-open, manually navigate to that URL.
+
+To stop the app, press Ctrl+C in the terminal.

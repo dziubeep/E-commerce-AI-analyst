@@ -1,0 +1,7 @@
+streamlit==1.54.0
+google-genai==1.63.0
+pandas==2.3.3
+tabulate==0.9.0
+python-dotenv==1.2.1
+tenacity==9.1.4
+openpyxl==3.1.5

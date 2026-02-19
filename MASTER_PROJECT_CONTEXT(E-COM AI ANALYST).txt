@@ -1,0 +1,95 @@
+Role for AI: You are the Senior Lead Architect & Developer.
+User: 3rd-year Data Analysis Student (Vilnius Tech).
+Goal: Build an Enterprise-Grade "Text-to-SQL" Agent for small e-commerce businesses.
+Time Constraint: 10 hours/week.
+Core Philosophy: "Shippable V1" focusing on robustness and trust. (Forecasting/ML is delayed to V2).
+
+1. Product Vision & Architecture Source
+Inspiration: This project combines the best practices from two industry-leading systems:
+
+Swiggy Hermes V3 (The "Agentic" Model): We adopt their focus on an "Orchestrator Agent," "Few-Shot RAG" from historical queries, and an "Explainability Layer" to build user trust.
+
+AWS Text-to-SQL Blog (The "Robust" Model): We adopt their "Self-Correction Loop" where execution errors are fed back to the LLM to fix syntax automatically.
+
+2. V1 Architecture Blueprint
+🛠 Tech Stack
+Language: Python 3.10+
+
+Interface: Streamlit (Chat UI)
+
+Database: SQLite (Local, created dynamically from CSV)
+
+LLM: Google Gemini (gemini-2.0-flash) via google-genai library.
+
+Data Processing: Pandas.
+
+⚙️ The "Agentic" Pipeline Logic (Detailed)
+Step 1: The Input & Orchestrator (Swiggy Logic)
+
+Input: User uploads orders.csv. System runs an ETL script to create a clean ecom.db SQLite database.
+
+Conversational Memory: The system must remember context (e.g., User: "Show revenue." -> AI: "500." -> User: "What about last week?" -> AI understands "What about [revenue] last week?").
+
+Step 2: Context Injection (The "Knowledge Base")
+
+Schema RAG: The LLM receives the database schema (Table names, Columns).
+
+Business Logic RAG (Swiggy's "Few-Shot" Method):
+
+Since we don't have a massive query log yet, we simulate Swiggy's "Historical Query Embeddings" using a static file (business_logic.txt).
+
+Content: This file contains 5-10 "Gold Standard" Q&A pairs (e.g., "How is Gross Margin calculated?" -> "SELECT (Price - Cost) / Price...") and specific business definitions.
+
+Action: This content is injected into the System Prompt to ground the AI in business reality.
+
+Step 3: Generation & Self-Healing (AWS Logic)
+
+Drafting: The LLM generates the SQL query based on the User Question + Schema + Business Logic.
+
+The Execution Loop (Crucial):
+
+Python attempts to execute the SQL on SQLite.
+
+IF ERROR: Python captures the exact error string (e.g., OperationalError: no such column 'profit'). It sends this error back to the LLM with the instruction: "The query failed with this error. Please fix it." (Max 3 retries).
+
+IF SUCCESS: Python retrieves the data.
+
+Step 4: The Explainability Layer (Swiggy Logic)
+
+The Requirement: Users do not trust "Black Box" numbers.
+
+The Action: After generating the result, the LLM must output a Natural Language Explanation.
+
+Template: "I calculated the [Metric] by filtering for [Condition] and summing [Column]. (Confidence: High)"
+
+Visuals: The UI displays the Final Answer (Big Number/Chart), the Explanation (Text), and a "Show SQL" toggle (for transparency).
+
+3. The Development Roadmap (8-Week Sprint)
+Phase 1: Data Foundation (Weeks 1-2)
+Task: Build etl.py.
+
+Logic: Clean online_retail_II.csv (Kaggle). Remove null IDs. Remove cancellations (Invoice starts with 'C'). Create Total_Sales column. Load into SQLite ecom.db.
+
+Outcome: A clean, query-ready database. Garbage In = Garbage Out.
+
+Phase 2: The Core Analyst Engine (Weeks 3-4)
+Task: Build agent.py.
+
+Logic: Implement the OpenAI API call with the "Few-Shot" System Prompt (using business_logic.txt as the Knowledge Base).
+
+Outcome: A script that takes a question and returns correct SQL.
+
+Phase 3: Robustness & Self-Healing (Week 5)
+Task: Implement the AWS-style while loop for error handling.
+
+Outcome: The system fixes its own syntax errors without crashing.
+
+Phase 4: Interface & Trust (Weeks 6-7)
+Task: Build Streamlit UI.
+
+Logic: Chat interface. Display "Thinking..." steps. Render the "Explainability" text clearly.
+
+Outcome: A usable web app.
+
+Phase 5: Deployment & Beta (Week 8)
+Task: Deploy to Streamlit Community Cloud. Test with real users.

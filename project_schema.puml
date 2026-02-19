@@ -1,0 +1,102 @@
+﻿@startuml
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+skinparam defaultFontSize 11
+skinparam shadowing false
+skinparam packageStyle frame
+skinparam arrowThickness 1
+
+title E-COM AI ANALYST -- Architecture (V1)
+
+actor User #LightBlue
+
+package "app.py (Streamlit UI)" as UI #E8F5E9 {
+  [Chat Input / History] as chatIn
+  [Session State] as state
+  [CSV Upload] as csvUp
+  [Smart Renderer\n(metric/chart/table)] as render
+}
+
+package "agent.py (Core Engine)" as ENGINE #E3F2FD {
+  [ask() Orchestrator] as ask
+  [Guardrail\ncheck_guardrail()] as guard
+  [SQL Gen\nask_llm_sql()] as call1
+  [Explainer\nask_llm_explain()] as call2
+  [execute_sql()\nRead-Only Guard] as execSQL
+  [Self-Healing Loop\nmax 3 retries] as heal
+  [Conversational Memory\n3-turn window] as mem
+  [Schema RAG\nget_schema()] as schemaRAG
+  [Dynamic Schema\ngenerate_dynamic_schema()] as dynSchema
+  [Few-Shot RAG\nload_business_logic()] as fewShot
+  [profile_dataset()] as profiler
+}
+
+package "Data Layer" as DATA #FCE4EC {
+  database "ecom.db\n(SQLite orders)" as db
+  database "Temp SQLite DB\n(uploaded CSV)" as tmpDB
+  file "business_logic.txt" as bizLogic
+  file ".env (API Key)" as env
+}
+
+package "etl.py (ETL)" as ETL #FFF3E0 {
+  [extract()] as ext
+  [transform()] as trn
+  [load()] as lod
+}
+
+cloud "Google Gemini API\ngemini-2.0-flash" as gemini #E8EAF6
+
+package "Tests" as TESTS #F5F5F5 {
+  [test_self_heal.py] as t1
+  [test_phase5.py] as t2
+}
+
+file "online_retail_II.xlsx" as xlsx
+component "convert.py" as conv
+
+User --> chatIn : question
+render --> User : answer + chart + SQL
+User --> csvUp : upload CSV
+
+chatIn --> ask
+csvUp --> dynSchema
+csvUp --> profiler
+csvUp --> tmpDB
+
+ask --> guard
+guard --> call1 : allowed
+guard ..> User : blocked
+call1 --> execSQL : valid SQL
+call1 ..> User : CLARIFY / UNABLE
+execSQL --> heal : exception
+heal --> call1 : re-prompt with error
+execSQL --> call2 : success
+call2 --> render
+
+schemaRAG --> call1
+dynSchema --> call1
+fewShot --> call1
+mem --> call1
+
+call1 --> gemini
+call2 --> gemini
+guard --> gemini
+profiler --> gemini
+
+execSQL --> db
+execSQL --> tmpDB
+schemaRAG --> db
+fewShot --> bizLogic
+env ..> gemini : API key
+
+xlsx --> ext
+ext --> trn
+trn --> lod
+lod --> db
+xlsx --> conv
+
+t1 --> ask
+t2 --> ask
+t2 --> guard
+
+@enduml

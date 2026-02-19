@@ -1,0 +1,206 @@
+################################################################################
+# BUSINESS LOGIC — Gold Standard Q&A Pairs
+# ─────────────────────────────────────────
+# This file is injected into the LLM System Prompt as few-shot examples.
+# Every SQL query here has been validated against ecom.db (table: orders).
+#
+# Table schema:
+#   orders(invoice TEXT, stockcode TEXT, description TEXT, quantity INTEGER,
+#          invoicedate TIMESTAMP, price REAL, customer_id INTEGER,
+#          country TEXT, total_sales REAL)
+#
+# Key business definitions:
+#   • Revenue / Total Sales  = SUM(total_sales)         [already = quantity * price]
+#   • Average Order Value    = SUM(total_sales) / COUNT(DISTINCT invoice)
+#   • Basket Size            = SUM(quantity) / COUNT(DISTINCT invoice)
+#   • Repeat Customer        = customer_id appearing in more than one distinct invoice
+#   • Date functions use SQLite strftime()
+################################################################################
+
+
+# ── Q1: Total Revenue ────────────────────────────────────────────────────────
+Question: What is the total revenue?
+Answer:
+SELECT ROUND(SUM(total_sales), 2) AS total_revenue
+FROM orders;
+Explanation: I calculated total revenue by summing the total_sales column, which represents quantity × price for every order line.
+
+
+# ── Q2: Revenue for a Specific Month ─────────────────────────────────────────
+Question: What was the revenue in November 2011?
+Answer:
+SELECT ROUND(SUM(total_sales), 2) AS monthly_revenue
+FROM orders
+WHERE strftime('%Y-%m', invoicedate) = '2011-11';
+Explanation: I filtered orders to November 2011 using strftime on the invoicedate column and summed total_sales.
+
+
+# ── Q3: Top 10 Products by Revenue ───────────────────────────────────────────
+Question: What are the top 10 best-selling products by revenue?
+Answer:
+SELECT description,
+       ROUND(SUM(total_sales), 2) AS revenue
+FROM orders
+GROUP BY description
+ORDER BY revenue DESC
+LIMIT 10;
+Explanation: I grouped all order lines by product description, summed revenue for each, and returned the top 10 in descending order.
+
+
+# ── Q4: Revenue by Country ───────────────────────────────────────────────────
+Question: Show me revenue broken down by country.
+Answer:
+SELECT country,
+       ROUND(SUM(total_sales), 2) AS revenue
+FROM orders
+GROUP BY country
+ORDER BY revenue DESC;
+Explanation: I grouped orders by country and summed total_sales for each, sorted from highest to lowest revenue.
+
+
+# ── Q5: Average Order Value ──────────────────────────────────────────────────
+Question: What is the average order value?
+Answer:
+SELECT ROUND(SUM(total_sales) / COUNT(DISTINCT invoice), 2) AS avg_order_value
+FROM orders;
+Explanation: I calculated Average Order Value (AOV) by dividing total revenue by the number of unique invoices. Each invoice represents one customer transaction.
+
+
+# ── Q6: Total Number of Unique Customers ─────────────────────────────────────
+Question: How many unique customers do we have?
+Answer:
+SELECT COUNT(DISTINCT customer_id) AS unique_customers
+FROM orders;
+Explanation: I counted the distinct customer IDs across all orders to find the total number of unique customers.
+
+
+# ── Q7: Monthly Revenue Trend ────────────────────────────────────────────────
+Question: Show me the monthly revenue trend.
+Answer:
+SELECT strftime('%Y-%m', invoicedate) AS month,
+       ROUND(SUM(total_sales), 2)     AS revenue
+FROM orders
+GROUP BY month
+ORDER BY month;
+Explanation: I grouped orders by year-month using strftime and summed revenue for each period, sorted chronologically. This shows how revenue changes over time.
+
+
+# ── Q8: Top 5 Customers by Spend ─────────────────────────────────────────────
+Question: Who are the top 5 customers by total spend?
+Answer:
+SELECT customer_id,
+       ROUND(SUM(total_sales), 2) AS total_spend,
+       COUNT(DISTINCT invoice)    AS num_orders
+FROM orders
+GROUP BY customer_id
+ORDER BY total_spend DESC
+LIMIT 5;
+Explanation: I grouped orders by customer ID, summed their total_sales, and ranked them by spend. I also included order count for context.
+
+
+# ── Q9: Repeat Customer Rate ─────────────────────────────────────────────────
+Question: What percentage of customers are repeat buyers?
+Answer:
+SELECT ROUND(
+         100.0 * SUM(CASE WHEN order_count > 1 THEN 1 ELSE 0 END)
+         / COUNT(*), 2
+       ) AS repeat_customer_pct
+FROM (
+    SELECT customer_id, COUNT(DISTINCT invoice) AS order_count
+    FROM orders
+    GROUP BY customer_id
+);
+Explanation: I first counted unique invoices per customer. Then I calculated what percentage of customers had more than one invoice — those are repeat buyers.
+
+
+# ── Q10: Revenue by Day of Week ──────────────────────────────────────────────
+Question: Which day of the week generates the most revenue?
+Answer:
+SELECT CASE CAST(strftime('%w', invoicedate) AS INTEGER)
+           WHEN 0 THEN 'Sunday'
+           WHEN 1 THEN 'Monday'
+           WHEN 2 THEN 'Tuesday'
+           WHEN 3 THEN 'Wednesday'
+           WHEN 4 THEN 'Thursday'
+           WHEN 5 THEN 'Friday'
+           WHEN 6 THEN 'Saturday'
+       END AS day_of_week,
+       ROUND(SUM(total_sales), 2) AS revenue
+FROM orders
+GROUP BY day_of_week
+ORDER BY revenue DESC;
+Explanation: I extracted the day of the week from each invoice date using strftime('%w'), mapped it to a readable name, and summed revenue for each day.
+
+
+# ── Q11: Average Revenue by Day of Week ──────────────────────────────────────
+Question: What is the average revenue broken down by the day of the week? Order from highest to lowest.
+Answer:
+SELECT CASE CAST(strftime('%w', invoicedate) AS INTEGER)
+           WHEN 0 THEN 'Sunday'
+           WHEN 1 THEN 'Monday'
+           WHEN 2 THEN 'Tuesday'
+           WHEN 3 THEN 'Wednesday'
+           WHEN 4 THEN 'Thursday'
+           WHEN 5 THEN 'Friday'
+           WHEN 6 THEN 'Saturday'
+       END AS day_of_week,
+       ROUND(AVG(total_sales), 2) AS avg_revenue
+FROM orders
+GROUP BY day_of_week
+ORDER BY avg_revenue DESC;
+Explanation: I calculated the average revenue per order line for each day of the week using AVG(total_sales), grouped by day name, and sorted from highest to lowest.
+
+
+# ── Q12: Products Most Frequently Bought Together ────────────────────────────
+Question: Which products are most frequently bought together on the same invoice?
+Answer:
+SELECT a.description AS product_a,
+       b.description AS product_b,
+       COUNT(*)      AS times_bought_together
+FROM orders a
+JOIN orders b
+  ON a.invoice = b.invoice
+ AND a.stockcode < b.stockcode
+GROUP BY a.description, b.description
+ORDER BY times_bought_together DESC
+LIMIT 10;
+Explanation: I calculated market basket pairs by self-joining the orders table on the same invoice, ensuring each pair is counted once (using stockcode < stockcode). The result shows the top 10 product pairs most often purchased together.
+
+
+# ── Q13: Top Customers with Days Since Last Purchase ─────────────────────────
+Question: Who are the top 10 customers based on total revenue, and how many days since their last purchase?
+Answer:
+SELECT customer_id,
+       ROUND(SUM(total_sales), 2) AS total_revenue,
+       COUNT(DISTINCT invoice)    AS num_orders,
+       MAX(invoicedate)           AS last_purchase,
+       CAST(julianday('now') - julianday(MAX(invoicedate)) AS INTEGER) AS days_since_last_purchase
+FROM orders
+GROUP BY customer_id
+ORDER BY total_revenue DESC
+LIMIT 10;
+Explanation: I calculated total revenue per customer, found their most recent purchase date, and used julianday() to compute how many days have passed since that last purchase.
+
+
+# ── Q14: High Order Count but Low Revenue Items ─────────────────────────────
+Question: Which 10 items have the highest number of total orders but generate the lowest total revenue?
+Answer:
+SELECT description,
+       COUNT(DISTINCT invoice) AS total_orders,
+       ROUND(SUM(total_sales), 2) AS total_revenue
+FROM orders
+GROUP BY description
+ORDER BY total_orders DESC, total_revenue ASC
+LIMIT 10;
+Explanation: I calculated the number of distinct invoices (orders) and total revenue for each product, then sorted by highest order count first and lowest revenue second. These are high-volume but low-value items.
+
+
+# ── Q15: Informal Language — "Which countries give the most money" ────────────
+Question: Which countries give the most money?
+Answer:
+SELECT country,
+       ROUND(SUM(total_sales), 2) AS revenue
+FROM orders
+GROUP BY country
+ORDER BY revenue DESC;
+Explanation: I interpreted "money" as total revenue (SUM of total_sales), grouped by country, and sorted from highest to lowest. The term "money" maps to the total_sales column which represents quantity × price.

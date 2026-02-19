@@ -1,0 +1,21 @@
+# Secrets & environment
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local databases (too large, contain private data)
+ecom.db
+*.db
+
+# Large raw data files (do not commit to GitHub)
+*.xlsx
+*.xls
+final_sales_data.csv
+Online_retail(example to work with)/
+
+# Streamlit local secrets (never commit — use dashboard secrets on Cloud)
+.streamlit/secrets.toml
