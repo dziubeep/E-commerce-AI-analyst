@@ -179,20 +179,12 @@ def get_schema(db_path: str = DB_PATH) -> str:
     conn.close()
     return "\n\n".join(schema_parts)
 
-# ── 1b. Dynamic Schema Extraction (for uploaded CSVs) ────────────────────────
-def generate_dynamic_schema(df: pd.DataFrame,
-                            table_name: str = "uploaded_data") -> str:
-    """
-    Build a human-readable schema string from a Pandas DataFrame.
-
-    For each column it reports: name, dtype, and one non-null sample value.
-    The output format mirrors the old hardcoded <schema> block so the
-    SQL LLM can consume it without changes to its parsing logic.
-    """
-    lines = [f"  TABLE: {table_name}"]
+# ── 1b. Dynamic Schema Extraction (for uploaded CSVs / Excel sheets) ─────
+def _schema_for_one_table(df: pd.DataFrame, table_name: str) -> str:
+    """Build schema lines for a single table / DataFrame."""
+    lines = [f"  TABLE: {table_name}  ({len(df):,} rows)"]
     for col in df.columns:
         dtype = str(df[col].dtype)
-        # Map pandas dtypes to SQL-friendly labels
         if "int" in dtype:
             sql_type = "INTEGER"
         elif "float" in dtype:
@@ -201,11 +193,38 @@ def generate_dynamic_schema(df: pd.DataFrame,
             sql_type = "TIMESTAMP"
         else:
             sql_type = "TEXT"
-        # Grab first non-null sample
         sample_series = df[col].dropna()
         sample = str(sample_series.iloc[0]) if len(sample_series) > 0 else "N/A"
         lines.append(f"    - {col} ({sql_type}): Example -> '{sample}'")
     return "\n".join(lines)
+
+
+def generate_dynamic_schema(df_or_dfs,
+                            table_name: str = "uploaded_data") -> str:
+    """
+    Build a human-readable schema string from one or more DataFrames.
+
+    Args:
+        df_or_dfs:  A single DataFrame **or** a dict[str, DataFrame]
+                    (one entry per Excel sheet).
+        table_name: Fallback table name when a single DF is passed.
+
+    Returns:
+        Schema string consumed by the SQL LLM prompt.
+    """
+    if isinstance(df_or_dfs, dict):
+        import re as _re
+        def _sanitize(n: str) -> str:
+            c = _re.sub(r"[^\w]", "_", n).strip("_")
+            if not c or c[0].isdigit():
+                c = "sheet_" + c
+            return c.lower()
+        parts = [
+            _schema_for_one_table(v, _sanitize(k))
+            for k, v in df_or_dfs.items()
+        ]
+        return "\n\n".join(parts)
+    return _schema_for_one_table(df_or_dfs, table_name)
 
 
 # ── 1c. Data Profiler — single LLM call to understand any dataset ────────

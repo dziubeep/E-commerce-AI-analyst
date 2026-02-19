@@ -108,20 +108,36 @@ if (not st.session_state.default_profiled
     st.session_state.default_profiled = True
 
 
-# ── Helper: load DataFrame into a temp-file SQLite DB ────────────────────
-def _load_df_to_sqlite(df: pd.DataFrame,
-                       table_name: str = "uploaded_data") -> str:
-    """
-    Write *df* into a temporary physical SQLite file and return its path.
+# ── Helper: load DataFrame(s) into a temp-file SQLite DB ─────────────────
+def _sanitize_table_name(name: str) -> str:
+    """Turn an Excel sheet name into a valid SQL table name."""
+    import re as _re
+    clean = _re.sub(r"[^\w]", "_", name).strip("_")
+    if not clean or clean[0].isdigit():
+        clean = "sheet_" + clean
+    return clean.lower()
 
-    Why a temp file instead of :memory:?
-      • Thread-safe — every agent.execute_sql() call opens/closes its own
-        short-lived connection to the file, exactly like the legacy ecom.db.
-      • No pickling issues — only a plain string path is stored in
-        st.session_state.
-      • Auto-cleanup — OS clears the temp dir on restart; we also delete
-        the previous temp file when a new CSV is uploaded.
+
+def _load_df_to_sqlite(df_or_dfs, table_name: str = "uploaded_data") -> str:
     """
+    Write one or more DataFrames into a temporary SQLite file.
+
+    Args:
+        df_or_dfs:  A single DataFrame **or** a dict[str, DataFrame]
+                    (as returned by pd.read_excel(sheet_name=None)).
+        table_name: Used only when a single DataFrame is passed.
+
+    Returns:
+        Path to the temp SQLite file.
+    """
+    # Normalise to dict
+    if isinstance(df_or_dfs, dict):
+        tables: dict[str, pd.DataFrame] = {
+            _sanitize_table_name(k): v for k, v in df_or_dfs.items()
+        }
+    else:
+        tables = {table_name: df_or_dfs}
+
     # Clean up any previous temp DB
     old_path = st.session_state.get("_tmp_db_path")
     if old_path and os.path.exists(old_path):
@@ -138,7 +154,8 @@ def _load_df_to_sqlite(df: pd.DataFrame,
     tmp.close()  # close the handle; sqlite3 will reopen it
 
     conn = sqlite3.connect(tmp_path)
-    df.to_sql(table_name, conn, if_exists="replace", index=False)
+    for tbl_name, tbl_df in tables.items():
+        tbl_df.to_sql(tbl_name, conn, if_exists="replace", index=False)
     conn.close()
 
     # Remember the path so we can clean it up next time
@@ -237,24 +254,45 @@ with st.sidebar:
         # Only re-process when a *new* file is uploaded
         if uploaded_file.name != st.session_state.uploaded_file_name:
             with st.spinner("Analysing your dataset…"):
-                if uploaded_file.name.lower().endswith((".xlsx", ".xls")):
-                    df = pd.read_excel(uploaded_file)
+                is_excel = uploaded_file.name.lower().endswith((".xlsx", ".xls"))
+
+                if is_excel:
+                    # Read ALL sheets → dict[sheet_name, DataFrame]
+                    sheets = pd.read_excel(uploaded_file, sheet_name=None)
+                    # Keep only non-empty sheets
+                    sheets = {k: v for k, v in sheets.items()
+                              if not v.empty}
                 else:
+                    sheets = None
                     df = pd.read_csv(uploaded_file)
-                st.session_state.uploaded_df = df
+
+                # Store for later reference
+                data_for_load = sheets if is_excel else df
+                st.session_state.uploaded_df = data_for_load
                 st.session_state.uploaded_file_name = uploaded_file.name
 
-                # 1. Load into in-memory SQLite
-                db_uri = _load_df_to_sqlite(df)
+                # 1. Load into temp SQLite (handles both single DF & dict)
+                db_uri = _load_df_to_sqlite(data_for_load)
                 st.session_state.db_path = db_uri
 
-                # 2. Generate dynamic schema
-                schema_str = agent.generate_dynamic_schema(df)
+                # 2. Generate dynamic schema (handles both single DF & dict)
+                schema_str = agent.generate_dynamic_schema(data_for_load)
                 st.session_state.dynamic_schema = schema_str
 
                 # 3. Profile the dataset (single LLM call — fault-tolerant)
-                sample_json = df.head(3).to_json(orient="records",
-                                                  date_format="iso")
+                #    For multi-sheet: send a combined sample from each table
+                if is_excel and sheets:
+                    sample_parts = []
+                    for sname, sdf in sheets.items():
+                        sample_parts.append(
+                            f"--- Sheet: {sname} ---\n"
+                            + sdf.head(3).to_json(orient="records",
+                                                   date_format="iso")
+                        )
+                    sample_json = "\n".join(sample_parts)
+                else:
+                    sample_json = df.head(3).to_json(orient="records",
+                                                      date_format="iso")
                 try:
                     biz_ctx = agent.profile_dataset(
                         st.session_state.client, schema_str, sample_json
@@ -273,8 +311,20 @@ with st.sidebar:
                 st.session_state.messages = []
                 st.session_state.chat_history = None
 
-            st.success(f"✅ Loaded **{uploaded_file.name}** "
-                       f"({len(df):,} rows × {len(df.columns)} cols)")
+            # ── Success banner ──
+            if is_excel and sheets:
+                total_rows = sum(len(v) for v in sheets.values())
+                sheet_list = ", ".join(
+                    f"{k} ({len(v):,}r)" for k, v in sheets.items()
+                )
+                st.success(
+                    f"✅ Loaded **{uploaded_file.name}** — "
+                    f"{len(sheets)} sheet(s), {total_rows:,} total rows\n\n"
+                    f"Sheets: {sheet_list}"
+                )
+            else:
+                st.success(f"✅ Loaded **{uploaded_file.name}** "
+                           f"({len(df):,} rows × {len(df.columns)} cols)")
 
         # Show detected context
         if st.session_state.business_context:
