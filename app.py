@@ -227,17 +227,20 @@ with st.sidebar:
     st.caption("Text-to-SQL for any business dataset")
     st.divider()
 
-    # ── CSV Upload ───────────────────────────────────────────────────────
+    # ── Data Upload ──────────────────────────────────────────────────────
     uploaded_file = st.file_uploader(
-        "📂 Upload a CSV file", type=["csv"],
-        help="Upload any CSV. The AI will learn its structure automatically."
+        "📂 Upload a CSV or Excel file", type=["csv", "xlsx", "xls"],
+        help="Upload any CSV or Excel file. The AI will learn its structure automatically."
     )
 
     if uploaded_file is not None:
         # Only re-process when a *new* file is uploaded
         if uploaded_file.name != st.session_state.uploaded_file_name:
             with st.spinner("Analysing your dataset…"):
-                df = pd.read_csv(uploaded_file)
+                if uploaded_file.name.lower().endswith((".xlsx", ".xls")):
+                    df = pd.read_excel(uploaded_file)
+                else:
+                    df = pd.read_csv(uploaded_file)
                 st.session_state.uploaded_df = df
                 st.session_state.uploaded_file_name = uploaded_file.name
 
@@ -336,7 +339,7 @@ for _msg_idx, msg in enumerate(st.session_state.messages):
 
 # ── Chat Input ───────────────────────────────────────────────────────────
 # Guard: if no data is loaded (Cloud deployment with no ecom.db and no
-# uploaded CSV), show a prompt to upload data instead of a broken chat.
+# uploaded file), show a prompt to upload data instead of a broken chat.
 _data_is_ready = (
     st.session_state.uploaded_file_name is not None
     or os.path.exists(st.session_state.db_path)
@@ -344,7 +347,7 @@ _data_is_ready = (
 
 if not _data_is_ready:
     st.info(
-        "📂 **Upload a CSV file** in the sidebar to get started. "
+        "📂 **Upload a CSV or Excel file** in the sidebar to get started. "
         "Once uploaded, you can ask any business question about your data."
     )
 
