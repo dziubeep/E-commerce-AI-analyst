@@ -344,8 +344,6 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_history = None
         st.rerun()
-    st.divider()
-    st.caption("Built with Gemini 2.0 Flash · Zero Hallucination Pipeline")
 
 
 # ── Render Chat History ──────────────────────────────────────────────────
