@@ -26,6 +26,7 @@ import pandas as pd
 import sqlite3
 import tempfile
 import agent  # the core engine
+from few_shot_store import FewShotStore
 
 # ── Page Config ──────────────────────────────────────────────────────────
 st.set_page_config(
@@ -72,6 +73,9 @@ if "uploaded_df" not in st.session_state:
 if "uploaded_file_name" not in st.session_state:
     st.session_state.uploaded_file_name = None
 
+if "schema_hash" not in st.session_state:
+    st.session_state.schema_hash = None
+
 if "default_profiled" not in st.session_state:
     st.session_state.default_profiled = False
 
@@ -84,6 +88,19 @@ if (not st.session_state.default_profiled
     try:
         schema_str = agent.get_schema(st.session_state.db_path)
         st.session_state.dynamic_schema = schema_str
+
+        # Compute schema hash for few-shot store scoping
+        st.session_state.schema_hash = FewShotStore.compute_schema_hash(
+            schema_str
+        )
+
+        # Seed few-shot store from business_logic.txt (one-time migration)
+        if os.path.exists(agent.BIZ_LOGIC_PATH):
+            stats = agent.few_shot_store.get_stats(st.session_state.schema_hash)
+            if isinstance(stats, dict) and stats.get("count", 0) == 0:
+                agent.few_shot_store.seed_from_business_logic(
+                    agent.BIZ_LOGIC_PATH, st.session_state.schema_hash
+                )
 
         # Grab sample rows for the profiler
         conn = sqlite3.connect(st.session_state.db_path)
@@ -279,7 +296,12 @@ with st.sidebar:
                 schema_str = agent.generate_dynamic_schema(data_for_load)
                 st.session_state.dynamic_schema = schema_str
 
-                # 3. Profile the dataset (single LLM call — fault-tolerant)
+                # 3. Compute schema hash for few-shot scoping
+                st.session_state.schema_hash = FewShotStore.compute_schema_hash(
+                    schema_str
+                )
+
+                # 4. Profile the dataset (single LLM call — fault-tolerant)
                 #    For multi-sheet: send a combined sample from each table
                 if is_excel and sheets:
                     sample_parts = []
@@ -310,6 +332,7 @@ with st.sidebar:
                 # Reset conversation for the new dataset
                 st.session_state.messages = []
                 st.session_state.chat_history = None
+                # schema_hash already set above
 
             # ── Success banner ──
             if is_excel and sheets:
@@ -344,6 +367,21 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_history = None
         st.rerun()
+
+    # ── Few-Shot Store Stats ───────────────────────────────────────────
+    if st.session_state.schema_hash:
+        stats = agent.few_shot_store.get_stats(st.session_state.schema_hash)
+        example_count = stats.get("count", 0) if isinstance(stats, dict) else 0
+        if example_count > 0:
+            with st.expander(f"🧠 Learned Examples ({example_count})"):
+                st.caption(
+                    "The AI learns from your validated answers (👍). "
+                    "These examples improve future SQL accuracy."
+                )
+                if st.button("🗑️ Clear learned examples",
+                             use_container_width=True):
+                    agent.few_shot_store.clear(st.session_state.schema_hash)
+                    st.rerun()
 
 
 # ── Render Chat History ──────────────────────────────────────────────────
@@ -384,6 +422,36 @@ for _msg_idx, msg in enumerate(st.session_state.messages):
             with st.expander("🔍 Show SQL"):
                 st.code(data["sql"], language="sql")
 
+            # ── Thumbs Up / Down — user validation gate ──
+            feedback_status = data.get("feedback")
+            if feedback_status == "approved":
+                st.caption("✅ Saved to memory")
+            elif feedback_status == "rejected":
+                st.caption("❌ Not saved")
+            elif data.get("question") and st.session_state.schema_hash:
+                col_up, col_down, col_spacer = st.columns([1, 1, 6])
+                with col_up:
+                    if st.button("👍", key=f"up_{_msg_idx}",
+                                 help="Correct — save to memory"):
+                        agent.few_shot_store.log(
+                            question=data["question"],
+                            sql=data["sql"],
+                            explanation=msg["content"],
+                            confidence=data.get("confidence", "Medium"),
+                            schema_hash=st.session_state.schema_hash,
+                        )
+                        st.session_state.messages[_msg_idx][
+                            "result_data"
+                        ]["feedback"] = "approved"
+                        st.rerun()
+                with col_down:
+                    if st.button("👎", key=f"dn_{_msg_idx}",
+                                 help="Incorrect — don't save"):
+                        st.session_state.messages[_msg_idx][
+                            "result_data"
+                        ]["feedback"] = "rejected"
+                        st.rerun()
+
 
 # ── Chat Input ───────────────────────────────────────────────────────────
 # Guard: if no data is loaded (Cloud deployment with no ecom.db and no
@@ -416,6 +484,7 @@ if _data_is_ready and (prompt := st.chat_input("Ask a business question…")):
                     db_path=st.session_state.db_path,
                     dynamic_schema=st.session_state.dynamic_schema,
                     business_context=st.session_state.business_context,
+                    schema_hash=st.session_state.schema_hash,
                 )
             except RuntimeError as e:
                 # Self-healing exhausted
@@ -517,6 +586,7 @@ if _data_is_ready and (prompt := st.chat_input("Ask a business question…")):
             "role": "assistant",
             "content": f"💡 {explanation}",
             "result_data": {
+                "question": result.get("question", prompt),
                 "formatted": result["formatted"],
                 "columns": result.get("columns", []),
                 "rows": [list(r) for r in result.get("rows", [])],

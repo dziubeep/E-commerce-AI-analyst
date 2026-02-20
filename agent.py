@@ -45,6 +45,7 @@ from google.genai import types
 from tabulate import tabulate
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from google.genai import errors as genai_errors
+from few_shot_store import FewShotStore
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "ecom.db")
 BIZ_LOGIC_PATH = os.path.join(BASE_DIR, "business_logic.txt")
+
+# ── Dynamic Few-Shot Store (replaces static business_logic.txt) ──────────
+few_shot_store = FewShotStore()
 
 
 # ── 1. Schema RAG — read live schema from SQLite ────────────────────────
@@ -399,22 +403,44 @@ RULES
 def build_sql_system_prompt(
     dynamic_schema: str | None = None,
     business_context: str | None = None,
+    schema_hash: str | None = None,
+    user_question: str | None = None,
 ) -> str:
     """Assemble the SQL-generation system prompt.
 
     If *dynamic_schema* / *business_context* are supplied (uploaded-CSV
     flow), they are injected directly.  Otherwise we fall back to the
-    original ecom.db schema + business_logic.txt — preserving backward
-    compatibility.
+    original ecom.db schema.
+
+    Few-shot examples are now retrieved dynamically from the FewShotStore
+    (BM25-ranked by relevance to user_question, scoped to schema_hash).
+    Falls back to static business_logic.txt ONLY for legacy ecom.db
+    when no dynamic examples exist yet.
     """
     schema_text = dynamic_schema if dynamic_schema else get_schema()
     context_text = business_context if business_context else "(No additional business context available.)"
 
-    # Load biz-logic file only when running against the legacy ecom.db
-    try:
-        biz_logic = load_business_logic()
-    except FileNotFoundError:
-        biz_logic = "(No gold-standard examples available.)"
+    # ── Dynamic few-shot retrieval (primary path) ────────────────────
+    biz_logic = "(No gold-standard examples available.)"
+
+    if schema_hash and user_question:
+        examples = few_shot_store.retrieve(user_question, schema_hash)
+        if examples:
+            biz_logic = FewShotStore.format_for_prompt(examples)
+            logger.info(
+                "Injected %d dynamic few-shot examples (schema %s)",
+                len(examples), schema_hash[:8],
+            )
+
+    # ── Fallback: static business_logic.txt for legacy ecom.db ───────
+    # Only used when: (a) no dynamic_schema (= legacy mode), AND
+    # (b) zero dynamic examples were found.
+    if biz_logic.startswith("(No") and dynamic_schema is None:
+        try:
+            biz_logic = load_business_logic()
+            logger.info("Fell back to static business_logic.txt")
+        except FileNotFoundError:
+            pass
 
     return SQL_SYSTEM_PROMPT_TEMPLATE.format(
         dynamic_schema=schema_text,
@@ -577,7 +603,8 @@ def _trim_history(history: list | None, max_turns: int = MEMORY_TURNS) -> list:
 def ask_llm_sql(client: genai.Client, question: str,
                 chat_history: list | None = None,
                 dynamic_schema: str | None = None,
-                business_context: str | None = None) -> dict:
+                business_context: str | None = None,
+                schema_hash: str | None = None) -> dict:
     """
     Call 1 — SQL-Only Generation (Strict Schema).
 
@@ -597,6 +624,8 @@ def ask_llm_sql(client: genai.Client, question: str,
             system_instruction=build_sql_system_prompt(
                 dynamic_schema=dynamic_schema,
                 business_context=business_context,
+                schema_hash=schema_hash,
+                user_question=question,
             ),
             temperature=0.0,  # fully deterministic SQL generation
         ),
@@ -739,7 +768,8 @@ def ask(question: str,
         db_path: str = DB_PATH,
         dynamic_schema: str | None = None,
         business_context: str | None = None,
-        memory_turns: int = MEMORY_TURNS) -> dict:
+        memory_turns: int = MEMORY_TURNS,
+        schema_hash: str | None = None) -> dict:
     """
     End-to-end "Zero Hallucination" pipeline:
         Input Validation -> Guardrail -> SQL (Call 1) -> Execute
@@ -771,6 +801,10 @@ def ask(question: str,
         business_context: Business context string (profiler output).
         memory_turns:     Number of conversation turns to retain
                           (default: MEMORY_TURNS constant).
+        schema_hash:      Hash of the current schema — scopes few-shot
+                          examples to the active dataset. When provided,
+                          successful queries are logged and relevant
+                          past examples are injected into the prompt.
 
     Returns:
         dict with consistent keys — check "response_type" to branch:
@@ -827,7 +861,8 @@ def ask(question: str,
         # ── Call 1: SQL-only generation ──
         llm_out = ask_llm_sql(client, current_question, current_history,
                               dynamic_schema=dynamic_schema,
-                              business_context=business_context)
+                              business_context=business_context,
+                              schema_hash=schema_hash)
         sql = llm_out["sql"]
 
         # ── Gate 1: Clarification check ──
